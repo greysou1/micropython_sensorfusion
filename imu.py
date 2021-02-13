@@ -9,6 +9,7 @@ from kalman import KalmanAngle
 mpu6050_addr = 0x68
 kalmanX = KalmanAngle()
 kalmanY = KalmanAngle()
+kalmanZ = KalmanAngle()
 
 # Required MPU6050 registers and their addresses
 
@@ -42,7 +43,7 @@ calib_y_gyro  = 0.0
 calib_z_gyro  = 0.0 
 
 #instantiate the i2c interface on esp32 (pins 21,22 for wroom32 variants) 
-i2c = I2C(scl=machine.Pin(22), sda=machine.Pin(21), freq=400000)
+i2c = I2C(0, scl=machine.Pin(1), sda=machine.Pin(0), freq=400000)
 
 def init_MPU():
     #write to sample rate register 
@@ -72,7 +73,6 @@ def read_raw_data(addr):
     return val
 
 def read_mpu6050():
-    
     init_MPU()
     calibrate_sensors()
     try:
@@ -97,14 +97,21 @@ def read_mpu6050():
 
             acc_angles = acc_angle(Ax, Ay, Az) # Calculate angle of inclination or tilt for the x and y axes with acquired acceleration vectors
             gyr_angles = gyr_angle(Gx, Gy, Gz, dt) # Calculate angle of inclination or tilt for x,y and z axes with angular rates and dt 
-            (c_angle_x, c_angle_y) = c_filtered_angle(acc_angles[0], acc_angles[1], gyr_angles[0], gyr_angles[1]) # filtered tilt angle i.e. what we're after
-            (k_angle_x, k_angle_y) = k_filtered_angle(acc_angles[0], acc_angles[1], Gx, Gy, dt)
+            (c_angle_x, c_angle_y, c_angle_z) = c_filtered_angle(acc_angles[0], acc_angles[1], acc_angles[2], gyr_angles[0], gyr_angles[1], gyr_angles[2]) # filtered tilt angle i.e. what we're after
+            (k_angle_x, k_angle_y, k_angle_z) = k_filtered_angle(acc_angles[0], acc_angles[1], acc_angles[2], Gx, Gy, Gz, dt)
 
-            set_last_read_angles(t_now, c_angle_x, c_angle_y)
-            #print ("Gx=%.6f" %Gx, u'\u00b0'+ "/s", "\tGy=%.6f" %Gy, u'\u00b0'+ "/s", "\tGz=%.6f" %Gz, u'\u00b0'+ "/s", "\tAx=%.6f g" %Ax, "\tAy=%.6f g" %Ay, "\tAz=%.6f g" %Az, "\ttemp=%.6f" %tp, u'\u00b0'+ "C") 	
-    
-            print("%.8f," %c_angle_x, "%.8f," %c_angle_y, "%.8f," %k_angle_x,"%.8f" %k_angle_y)
+            set_last_read_angles(t_now, c_angle_x, c_angle_y, c_angle_z)
+            #print ("Gx=%.6f" %Gx, u'\u00b0'+ "/s", "\tGy=%.6f" %Gy, u'\u00b0'+ "/s", "\tGz=%.6f" %Gz, u'\u00b0'+ "/s", "\tAx=%.6f g" %Ax, "\tAy=%.6f g" %Ay, "\tAz=%.6f g" %Az)#, "\ttemp=%.6f" %tp, u'\u00b0'+ "C") 	
 
+            avg_ck_angle_x = mean(c_angle_x, k_angle_x)
+            avg_ck_angle_y = mean(c_angle_y, k_angle_y)
+            avg_ck_angle_z = mean(c_angle_z, k_angle_z)
+
+            print("%.8f x," %avg_ck_angle_x, "%.8f y," %avg_ck_angle_y, "%.8f z" %avg_ck_angle_z)
+
+            #print("%.8f," %c_angle_x, "%.8f," %c_angle_y, "%.8f," %c_angle_z, "%.8f," %k_angle_x,"%.8f" %k_angle_y, "%.8f" %k_angle_z)
+            
+            #sleep(1)
             time.sleep_ms(4)
 
     except KeyboardInterrupt:
@@ -118,7 +125,7 @@ def calibrate_sensors():
     y_gyro  = 0
     z_gyro  = 0
     
-    #print("Starting Calibration")
+    print("Starting Calibration")
 
     #Discard the first set of values read from the IMU
     read_values_helper()
@@ -149,21 +156,27 @@ def calibrate_sensors():
     calib_y_gyro  = y_gyro
     calib_z_gyro  = z_gyro
 
-    #print("Finishing Calibration")
+    print("Finishing Calibration. Calibrated values are: ")
+    print('calib_x_accel: ', calib_x_accel)
+    print('calib_y_accel: ', calib_y_accel)
+    print('calib_z_accel: ', calib_z_accel)
+    print('calib_x_gyro: ', calib_x_gyro)
+    print('calib_y_gyro: ', calib_y_gyro)
+    print('calib_z_gyro: ', calib_z_gyro)
 
-def set_last_read_angles(time, x, y):
-    global last_read_time, last_x_angle, last_y_angle
+def set_last_read_angles(time, x, y, z):
+    global last_read_time, last_x_angle, last_y_angle, last_z_angle
     last_read_time = time
     last_x_angle = x 
     last_y_angle = y
-    #last_z_angle = z
+    last_z_angle = z
 
 # accelerometer data can't be used to calculate 'yaw' angles or rotation around z axis.
 def acc_angle(Ax, Ay, Az):
     radToDeg = 180/3.14159
     ax_angle = math.atan(Ay/math.sqrt(math.pow(Ax,2) + math.pow(Az, 2)))*radToDeg
     ay_angle = math.atan((-1*Ax)/math.sqrt(math.pow(Ay,2) + math.pow(Az, 2)))*radToDeg
-    return (ax_angle, ay_angle)
+    return (ax_angle, ay_angle, Az)
 
 def gyr_angle(Gx, Gy, Gz, dt):
     gx_angle = Gx*dt + get_last_x_angle()
@@ -172,17 +185,24 @@ def gyr_angle(Gx, Gy, Gz, dt):
     return (gx_angle, gy_angle, gz_angle)
 
   # A complementary filter to determine the change in angle by combining accelerometer and gyro values. Alpha depends on the sampling rate...
-def c_filtered_angle(ax_angle, ay_angle, gx_angle, gy_angle):
+
+def c_filtered_angle(ax_angle, ay_angle, az_angle, gx_angle, gy_angle, gz_angle):
     alpha = 0.90
     c_angle_x = alpha*gx_angle + (1.0 - alpha)*ax_angle
     c_angle_y = alpha*gy_angle + (1.0 - alpha)*ay_angle
-    return (c_angle_x, c_angle_y)
+    c_angle_z = alpha*gz_angle + (1.0 - alpha)*az_angle
+    return (c_angle_x, c_angle_y, c_angle_z)
 
  # Kalman filter to determine the change in angle by combining accelerometer and gyro values. 
-def k_filtered_angle(ax_angle, ay_angle, Gx, Gy, dt):
+
+def k_filtered_angle(ax_angle, ay_angle, az_angle, Gx, Gy, Gz, dt):
     k_angle_x = kalmanX.getAngle(ax_angle, Gx, dt)
     k_angle_y = kalmanY.getAngle(ay_angle, Gy, dt)
-    return (k_angle_x, k_angle_y)
+    k_angle_z = kalmanZ.getAngle(az_angle, Gz, dt)
+    return (k_angle_x, k_angle_y, k_angle_z)
+
+def mean(x, y):
+    return (x+y/2)
 
 def read_values_helper():
 
@@ -210,3 +230,4 @@ def get_last_y_angle():
 def get_last_z_angle():
     return last_z_angle
 
+read_mpu6050()
